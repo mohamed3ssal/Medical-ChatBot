@@ -5,6 +5,7 @@ from langchain_groq import ChatGroq
 from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
+from langchain.memory import ConversationBufferWindowMemory
 from dotenv import load_dotenv
 from src.prompt import *
 import os
@@ -25,15 +26,24 @@ docsearch = PineconeVectorStore.from_existing_index(
 
 retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 3})
 
-# ✅ هنا لازم نمرر المفتاح يدويًا لو ما اتلقطش تلقائي
+# ✅ نموذج المحادثة
 chatModel = ChatGroq(
     model="llama-3.1-8b-instant",
     api_key=GROQ_API_KEY
 )
 
+# ✅ ذاكرة المحادثة: تتذكر آخر 3 تفاعلات فقط
+memory = ConversationBufferWindowMemory(
+    memory_key="chat_history",
+    return_messages=True,
+    k=3
+)
+
+# ✅ الـ Prompt مع إدراج المحادثات السابقة
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
-    ("human", "{input}"),
+    ("placeholder", "{chat_history}"),
+    ("human", "{input}")
 ])
 
 question_answer_chain = create_stuff_documents_chain(chatModel, prompt)
@@ -46,10 +56,24 @@ def index():
 @app.route("/get", methods=["GET", "POST"])
 def chat():
     msg = request.form["msg"]
-    print(msg)
-    response = rag_chain.invoke({"input": msg})
-    print("Response:", response["answer"])
-    return str(response["answer"])
+    print("User:", msg)
+
+    # 🧠 تحميل المحادثة السابقة من الذاكرة
+    previous_context = memory.load_memory_variables({})
+
+    # استدعاء السلسلة مع المحادثة السابقة
+    response = rag_chain.invoke({
+        "input": msg,
+        "chat_history": previous_context.get("chat_history", [])
+    })
+
+    answer = response["answer"]
+    print("Response:", answer)
+
+    # 💾 حفظ السؤال والإجابة في الذاكرة
+    memory.save_context({"input": msg}, {"output": answer})
+
+    return str(answer)
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=9090, debug=True)
